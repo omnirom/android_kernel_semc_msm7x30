@@ -23,7 +23,7 @@
 #define AFE_HW_PATH_MI2S_RX     5
 #define AFE_HW_PATH_MI2S_TX     6
 
-#define AFE_VOLUME_UNITY 0x4000 /* Based on Q14 */
+#define AFE_VOLUME_UNITY 0x8000 /* Based on Q14 */
 
 struct msm_afe_config {
 	u16 sample_rate;
