@@ -1,0 +1,363 @@
+/* drivers/android/pmem_wrapper.c
+ *
+ * Copyright (C) 2007 Google, Inc.
+ * Copyright (c) 2009-2012, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2014  Rudolf Tammekivi <rtammekivi@gmail.com>
+ *
+ * This software is licensed under the terms of the GNU General Public
+ * License version 2, as published by the Free Software Foundation, and
+ * may be copied, distributed, and modified under those terms.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ */
+
+#include <linux/android_pmem.h>
+#include <linux/file.h>
+#include <linux/miscdevice.h>
+#include <linux/mm.h>
+#include <linux/mm_types.h>
+#include <linux/module.h>
+#include <linux/msm_ion.h>
+#include <linux/platform_device.h>
+#include <linux/slab.h>
+
+#define PMEM_MAX_DEVICES (10)
+
+struct pmem_data {
+	struct ion_client *client;
+	struct miscdevice dev;
+};
+
+struct allocation_data {
+	struct file *file;
+	struct ion_client *client;
+	struct ion_handle *handle;
+};
+
+static struct pmem_data pmem[PMEM_MAX_DEVICES];
+
+static int get_id(struct file *file)
+{
+	return MINOR(file->f_dentry->d_inode->i_rdev);
+}
+
+/* Detect whether the file is opened from a PMEM driver. */
+static int is_pmem_file(struct file *file)
+{
+	int id;
+
+	if (unlikely(!file || !file->f_dentry || !file->f_dentry->d_inode))
+		return 0;
+
+	id = get_id(file);
+	return (unlikely(id >= PMEM_MAX_DEVICES ||
+		file->f_dentry->d_inode->i_rdev !=
+		     MKDEV(MISC_MAJOR, pmem[id].dev.minor))) ? 0 : 1;
+}
+
+/* HACK: This does not return struct file *. It returns private struct, casted
+ * to struct file *.
+ */
+int get_pmem_file(unsigned int fd, unsigned long *start, unsigned long *vstart,
+		  unsigned long *len, struct file **filep)
+{
+	int ret;
+	struct file *file = fget(fd);
+	struct allocation_data *adata = NULL;
+
+	if (is_pmem_file(file)) {
+		/* Get file private data, which is stored in pmem_open. */
+		adata = file->private_data;
+	} else {
+		/* Not PMEM fd. Assume the fd is directly from ION. */
+		adata = kzalloc(sizeof(*adata), GFP_KERNEL);
+		/* Get PMEM client 0 ION client. */
+		adata->client = pmem[0].client;
+		adata->handle = ion_import_dma_buf(adata->client, fd);
+	}
+
+	adata->file = file;
+
+	if (IS_ERR_OR_NULL(adata->handle)) {
+		ret = PTR_ERR(adata->handle);
+		adata->handle = NULL;
+		pr_err("%s: Invalid handle ret=%d\n", __func__, ret);
+		goto err;
+	}
+
+	ret = ion_phys(adata->client, adata->handle, start, (size_t *)len);
+	if (ret) {
+		pr_err("%s: Failed to ion_phys ret=%d\n", __func__, ret);
+		goto err_free;
+	}
+
+	*vstart = (unsigned long)ion_map_kernel(adata->client, adata->handle);
+	if (IS_ERR_OR_NULL((void *)*vstart)) {
+		ret = PTR_ERR((void *)*vstart);
+		pr_err("%s: Failed to ion_map_kernel ret=%d\n", __func__, ret);
+		goto err_free;
+	}
+
+	*filep = (struct file *)adata;
+
+	return 0;
+err_free:
+	if (!is_pmem_file(file)) {
+		ion_free(adata->client, adata->handle);
+		adata->handle = NULL;
+	}
+err:
+	fput(file);
+	return ret;
+}
+EXPORT_SYMBOL(get_pmem_file);
+
+int get_pmem_fd(int fd, unsigned long *start, unsigned long *end)
+{
+	pr_err("%s\n", __func__);
+	/* TODO */
+	return -EINVAL;
+}
+EXPORT_SYMBOL(get_pmem_fd);
+
+int get_pmem_user_addr(struct file *file, unsigned long *start,
+		       unsigned long *end)
+{
+	pr_err("%s\n", __func__);
+	/* TODO */
+	return -EINVAL;
+}
+EXPORT_SYMBOL(get_pmem_user_addr);
+
+/* HACK: This does not have parameter struct file *. It has private struct,
+ * casted to struct file *.
+ */
+void put_pmem_file(struct file *file)
+{
+	struct allocation_data *adata = (struct allocation_data *)file;
+	bool pmem_file = is_pmem_file(adata->file);
+
+	if (adata->client && adata->handle) {
+		ion_unmap_kernel(adata->client, adata->handle);
+		if (!pmem_file) {
+			ion_free(adata->client, adata->handle);
+			adata->handle = NULL;
+		}
+	}
+
+	fput(adata->file);
+
+	/* Free data which was allocated in get_pmem_file. */
+	if (!pmem_file)
+		kfree(adata);
+}
+EXPORT_SYMBOL(put_pmem_file);
+
+void put_pmem_fd(int fd)
+{
+	pr_err("%s\n", __func__);
+	/* TODO */
+}
+EXPORT_SYMBOL(put_pmem_fd);
+
+void flush_pmem_fd(int fd, unsigned long start, unsigned long len)
+{
+	pr_err("%s\n", __func__);
+	/* TODO */
+}
+EXPORT_SYMBOL(flush_pmem_fd);
+
+void flush_pmem_file(struct file *file, unsigned long start, unsigned long len)
+{
+	pr_err("%s\n", __func__);
+	/* TODO */
+}
+EXPORT_SYMBOL(flush_pmem_file);
+
+int pmem_cache_maint(struct file *file, unsigned int cmd,
+		struct pmem_addr *pmem_addr)
+{
+	pr_err("%s\n", __func__);
+	/* TODO */
+	return -EINVAL;
+}
+EXPORT_SYMBOL(pmem_cache_maint);
+
+static long pmem_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+	pr_err("%s\n", __func__);
+	/* TODO: Is this deprecated? */
+	return -EINVAL;
+}
+
+static int pmem_mmap(struct file *file, struct vm_area_struct *vma)
+{
+	int ret;
+	struct allocation_data *adata = file->private_data;
+	unsigned long vma_size = vma->vm_end - vma->vm_start;
+
+	unsigned long start = 0;
+	size_t len = 0;
+
+	adata->handle = ion_alloc(adata->client, vma_size, SZ_4K,
+		ION_HEAP(ION_CP_MM_HEAP_ID), 0);
+	if (IS_ERR_OR_NULL(adata->handle)) {
+		ret = PTR_ERR(adata->handle);
+		adata->handle = NULL;
+		pr_err("%s: Failed to ion_alloc ret=%d\n", __func__, ret);
+		goto err;
+	}
+
+	ret = ion_phys(adata->client, adata->handle, &start, &len);
+	if (ret) {
+		pr_err("%s: Failed to ion_phys ret=%d\n", __func__, ret);
+		goto err_free;
+	}
+
+	/* Set physical address link with VMA. */
+	vma->vm_pgoff = start >> PAGE_SHIFT;
+
+	/* MAP physical address to userspace. */
+	ret = remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff, vma_size,
+		vma->vm_page_prot);
+	if (ret) {
+		pr_err("%s: Failed to remap_pfn_range ret=%d\n", __func__, ret);
+		goto err_free;
+	}
+
+	pr_debug("%s: Allocated & mmapped p:0x%lx v:0x%lx\n",
+		__func__, start, vma->vm_start);
+
+	return 0;
+err_free:
+	ion_free(adata->client, adata->handle);
+	adata->handle = NULL;
+err:
+	return ret;
+}
+
+static int pmem_open(struct inode *inode, struct file *file)
+{
+	int id = get_id(file);
+	struct allocation_data *adata;
+
+	adata = kzalloc(sizeof(*adata), GFP_KERNEL);
+	if (!adata)
+		return -ENOMEM;
+
+	adata->file = file;
+	adata->client = pmem[id].client;
+
+	file->private_data = adata;
+
+	return 0;
+}
+
+static int pmem_release(struct inode *inode, struct file *file)
+{
+	struct allocation_data *adata = file->private_data;
+
+	if (adata->client && adata->handle) {
+		ion_free(adata->client, adata->handle);
+		adata->handle = NULL;
+	}
+
+	file->private_data = NULL;
+	kfree(adata);
+
+	return 0;
+}
+
+static const struct file_operations pmem_fops = {
+	.unlocked_ioctl	= pmem_ioctl,
+	.mmap		= pmem_mmap,
+	.open		= pmem_open,
+	.release	= pmem_release,
+};
+
+int pmem_setup(struct android_pmem_platform_data *pdata,
+	long (*ioctl)(struct file *, unsigned int, unsigned long),
+	int (*release)(struct inode *, struct file *))
+{
+	int ret;
+
+	static int id = 0;
+	pmem[id].client = msm_ion_client_create(-1, pdata->ion_client);
+	if (IS_ERR_OR_NULL(pmem[id].client)) {
+		ret = PTR_ERR(pmem[id].client);
+		pmem[id].client = NULL;
+		pr_err("Failed to msm_ion_client_create ret=%d\n", ret);
+		goto err;
+	}
+
+	/* Dynamic devfs node. */
+	pmem[id].dev.name = pdata->name;
+	pmem[id].dev.minor = id;
+	pmem[id].dev.fops = &pmem_fops;
+
+	ret = misc_register(&pmem[id].dev);
+	if (ret) {
+		pr_err("Failed to misc_register ret=%d\n", ret);
+		goto err_destroy_client;
+	}
+
+	id++;
+
+	return 0;
+err_destroy_client:
+	ion_client_destroy(pmem[id].client);
+	pmem[id].client = NULL;
+err:
+	return ret;
+}
+EXPORT_SYMBOL(pmem_setup);
+
+static int pmem_probe(struct platform_device *pdev)
+{
+	struct android_pmem_platform_data *pdata;
+
+	if (!pdev || !pdev->dev.platform_data) {
+		pr_err("No pdev/platform_data\n");
+		return -EINVAL;
+	}
+	pdata = pdev->dev.platform_data;
+
+	return pmem_setup(pdata, NULL, NULL);
+}
+
+static int pmem_remove(struct platform_device *pdev)
+{
+	int id = pdev->id;
+
+	misc_deregister(&pmem[id].dev);
+
+	ion_client_destroy(pmem[id].client);
+	pmem[id].client = NULL;
+	return 0;
+}
+
+static struct platform_driver pmem_driver = {
+	.probe	= pmem_probe,
+	.remove	= pmem_remove,
+	.driver	= {
+		.name = "android_pmem",
+	}
+};
+
+
+static int __init pmem_init(void)
+{
+	return platform_driver_register(&pmem_driver);
+}
+
+static void __exit pmem_exit(void)
+{
+	platform_driver_unregister(&pmem_driver);
+}
+
+module_init(pmem_init);
+module_exit(pmem_exit);
