@@ -161,6 +161,16 @@ struct android_pmem_platform_data
 	 * private data
 	 */
 	void *private_data;
+#ifdef CONFIG_ANDROID_PMEM_ION_WRAPPER
+	/*
+	 * ion client name
+	 */
+	const char *ion_client;
+	/*
+	 * ion heap mask
+	 */
+	unsigned int heap_mask;
+#endif
 };
 
 int pmem_setup(struct android_pmem_platform_data *pdata,
