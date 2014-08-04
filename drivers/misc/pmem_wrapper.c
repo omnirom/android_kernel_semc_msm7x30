@@ -36,6 +36,7 @@ struct allocation_data {
 	struct file *file;
 	struct ion_client *client;
 	struct ion_handle *handle;
+	struct vm_area_struct *vma; /* NULL for indirect allocations. */
 };
 
 static struct pmem_data pmem[PMEM_MAX_DEVICES];
@@ -78,6 +79,7 @@ int get_pmem_file(unsigned int fd, unsigned long *start, unsigned long *vstart,
 		/* Get PMEM client 0 ION client. */
 		adata->client = pmem[0].client;
 		adata->handle = ion_import_dma_buf(adata->client, fd);
+		adata->vma = NULL;
 	}
 
 	adata->file = file;
@@ -125,11 +127,19 @@ int get_pmem_fd(int fd, unsigned long *start, unsigned long *end)
 EXPORT_SYMBOL(get_pmem_fd);
 
 int get_pmem_user_addr(struct file *file, unsigned long *start,
-		       unsigned long *end)
+		       unsigned long *len)
 {
-	pr_err("%s\n", __func__);
-	/* TODO */
-	return -EINVAL;
+	int ret = -EINVAL;
+
+	if (is_pmem_file(file)) {
+		struct allocation_data *adata = file->private_data;
+		if (adata->handle && adata->vma) {
+			*start = adata->vma->vm_start;
+			*len = adata->vma->vm_end - adata->vma->vm_start;
+			ret = 0;
+		}
+	}
+	return ret;
 }
 EXPORT_SYMBOL(get_pmem_user_addr);
 
@@ -228,6 +238,9 @@ static int pmem_mmap(struct file *file, struct vm_area_struct *vma)
 		pr_err("%s: Failed to remap_pfn_range ret=%d\n", __func__, ret);
 		goto err_free;
 	}
+
+	/* Set vma for future mappings. */
+	adata->vma = vma;
 
 	pr_debug("%s: Allocated & mmapped p:0x%lx v:0x%lx\n",
 		__func__, start, vma->vm_start);
