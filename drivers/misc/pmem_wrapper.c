@@ -30,12 +30,14 @@
 
 struct pmem_data {
 	struct ion_client *client;
+	unsigned int heap_mask;
 	struct miscdevice dev;
 };
 
 struct allocation_data {
 	struct ion_client *client;
 	struct ion_handle *handle;
+	unsigned int heap_mask;
 	struct vm_area_struct *vma; /* NULL for indirect allocations. */
 };
 
@@ -264,7 +266,7 @@ static long pmem_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		if (adata->handle)
 			return -EINVAL;
 		adata->handle = ion_alloc(adata->client, arg, SZ_4K,
-			ION_HEAP(ION_CP_MM_HEAP_ID), 0);
+			ION_HEAP(adata->heap_mask), 0);
 		if (IS_ERR_OR_NULL(adata->handle)) {
 			ret = PTR_ERR(adata->handle);
 			adata->handle = NULL;
@@ -301,7 +303,7 @@ static long pmem_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		if (adata->handle)
 			return -EINVAL;
 		adata->handle = ion_alloc(adata->client, alloc.size,
-			alloc.align, ION_HEAP(ION_CP_MM_HEAP_ID), 0);
+			alloc.align, ION_HEAP(adata->heap_mask), 0);
 		if (IS_ERR_OR_NULL(adata->handle)) {
 			ret = PTR_ERR(adata->handle);
 			adata->handle = NULL;
@@ -332,7 +334,7 @@ static int pmem_mmap(struct file *file, struct vm_area_struct *vma)
 
 	if (!already_allocated) {
 		adata->handle = ion_alloc(adata->client, vma_size, SZ_4K,
-			ION_HEAP(ION_CP_MM_HEAP_ID), 0);
+			ION_HEAP(adata->heap_mask), 0);
 		if (IS_ERR_OR_NULL(adata->handle)) {
 			ret = PTR_ERR(adata->handle);
 			adata->handle = NULL;
@@ -385,6 +387,7 @@ static int pmem_open(struct inode *inode, struct file *file)
 		return -ENOMEM;
 
 	adata->client = pmem[id].client;
+	adata->heap_mask = pmem[id].heap_mask;
 
 	file->private_data = adata;
 
@@ -420,6 +423,13 @@ int pmem_setup(struct android_pmem_platform_data *pdata,
 	int ret;
 
 	static int id = 0;
+
+	if (!pdata->ion_client || !pdata->heap_mask) {
+		pr_err("No ion client/heap mask\n");
+		ret = -EINVAL;
+		goto err;
+	}
+	pmem[id].heap_mask = pdata->heap_mask;
 	pmem[id].client = msm_ion_client_create(-1, pdata->ion_client);
 	if (IS_ERR_OR_NULL(pmem[id].client)) {
 		ret = PTR_ERR(pmem[id].client);

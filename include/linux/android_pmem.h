@@ -160,6 +160,10 @@ struct android_pmem_platform_data
 	 * ion client name
 	 */
 	const char *ion_client;
+	/*
+	 * ion heap mask
+	 */
+	unsigned int heap_mask;
 #endif
 };
 
