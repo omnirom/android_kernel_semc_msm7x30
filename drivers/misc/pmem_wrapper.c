@@ -325,17 +325,21 @@ static int pmem_mmap(struct file *file, struct vm_area_struct *vma)
 	int ret;
 	struct allocation_data *adata = file->private_data;
 	unsigned long vma_size = vma->vm_end - vma->vm_start;
+	bool already_allocated = (adata->handle != NULL);
 
 	unsigned long start = 0;
 	size_t len = 0;
 
-	adata->handle = ion_alloc(adata->client, vma_size, SZ_4K,
-		ION_HEAP(ION_CP_MM_HEAP_ID), 0);
-	if (IS_ERR_OR_NULL(adata->handle)) {
-		ret = PTR_ERR(adata->handle);
-		adata->handle = NULL;
-		pr_err("%s: Failed to ion_alloc ret=%d\n", __func__, ret);
-		goto err;
+	if (!already_allocated) {
+		adata->handle = ion_alloc(adata->client, vma_size, SZ_4K,
+			ION_HEAP(ION_CP_MM_HEAP_ID), 0);
+		if (IS_ERR_OR_NULL(adata->handle)) {
+			ret = PTR_ERR(adata->handle);
+			adata->handle = NULL;
+			pr_err("%s: Failed to ion_alloc ret=%d\n",
+				__func__, ret);
+			goto err;
+		}
 	}
 
 	ret = ion_phys(adata->client, adata->handle, &start, &len);
@@ -363,8 +367,10 @@ static int pmem_mmap(struct file *file, struct vm_area_struct *vma)
 
 	return 0;
 err_free:
-	ion_free(adata->client, adata->handle);
-	adata->handle = NULL;
+	if (!already_allocated) {
+		ion_free(adata->client, adata->handle);
+		adata->handle = NULL;
+	}
 err:
 	return ret;
 }
