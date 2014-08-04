@@ -33,7 +33,6 @@ struct pmem_data {
 };
 
 struct allocation_data {
-	struct file *file;
 	struct ion_client *client;
 	struct ion_handle *handle;
 	struct vm_area_struct *vma; /* NULL for indirect allocations. */
@@ -60,29 +59,31 @@ static int is_pmem_file(struct file *file)
 		     MKDEV(MISC_MAJOR, pmem[id].dev.minor))) ? 0 : 1;
 }
 
-/* HACK: This does not return struct file *. It returns private struct, casted
- * to struct file *.
- */
 int get_pmem_file(unsigned int fd, unsigned long *start, unsigned long *vstart,
 		  unsigned long *len, struct file **filep)
 {
 	int ret;
 	struct file *file = fget(fd);
 	struct allocation_data *adata = NULL;
+	bool pmem_file = is_pmem_file(file);
 
-	if (is_pmem_file(file)) {
+	if (pmem_file) {
 		/* Get file private data, which is stored in pmem_open. */
 		adata = file->private_data;
 	} else {
+		/* Close the file, not using it anymore. */
+		fput(file);
+
+		file = kzalloc(sizeof(*file), GFP_KERNEL);
 		/* Not PMEM fd. Assume the fd is directly from ION. */
 		adata = kzalloc(sizeof(*adata), GFP_KERNEL);
 		/* Get PMEM client 0 ION client. */
 		adata->client = pmem[0].client;
 		adata->handle = ion_import_dma_buf(adata->client, fd);
 		adata->vma = NULL;
-	}
 
-	adata->file = file;
+		file->private_data = adata;
+	}
 
 	if (IS_ERR_OR_NULL(adata->handle)) {
 		ret = PTR_ERR(adata->handle);
@@ -104,16 +105,18 @@ int get_pmem_file(unsigned int fd, unsigned long *start, unsigned long *vstart,
 		goto err_free;
 	}
 
-	*filep = (struct file *)adata;
+	*filep = file;
 
 	return 0;
 err_free:
-	if (!is_pmem_file(file)) {
+	if (!pmem_file) {
 		ion_free(adata->client, adata->handle);
 		adata->handle = NULL;
+		kfree(file);
 	}
 err:
-	fput(file);
+	if (pmem_file)
+		fput(file);
 	return ret;
 }
 EXPORT_SYMBOL(get_pmem_file);
@@ -142,27 +145,24 @@ int get_pmem_user_addr(struct file *file, unsigned long *start,
 }
 EXPORT_SYMBOL(get_pmem_user_addr);
 
-/* HACK: This does not have parameter struct file *. It has private struct,
- * casted to struct file *.
- */
 void put_pmem_file(struct file *file)
 {
-	struct allocation_data *adata = (struct allocation_data *)file;
-	bool pmem_file = is_pmem_file(adata->file);
+	struct allocation_data *adata = file->private_data;
+	bool pmem_file = is_pmem_file(file);
 
 	if (adata->client && adata->handle) {
 		ion_unmap_kernel(adata->client, adata->handle);
 		if (!pmem_file) {
 			ion_free(adata->client, adata->handle);
 			adata->handle = NULL;
+			kfree(adata);
 		}
 	}
 
-	fput(adata->file);
-
-	/* Free data which was allocated in get_pmem_file. */
-	if (!pmem_file)
-		kfree(adata);
+	if (pmem_file)
+		fput(file);
+	else
+		kfree(file);
 }
 EXPORT_SYMBOL(put_pmem_file);
 
@@ -290,7 +290,6 @@ static int pmem_open(struct inode *inode, struct file *file)
 	if (!adata)
 		return -ENOMEM;
 
-	adata->file = file;
 	adata->client = pmem[id].client;
 
 	file->private_data = adata;
