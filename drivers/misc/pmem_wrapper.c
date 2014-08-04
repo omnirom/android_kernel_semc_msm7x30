@@ -195,9 +195,33 @@ EXPORT_SYMBOL(flush_pmem_file);
 int pmem_cache_maint(struct file *file, unsigned int cmd,
 		struct pmem_addr *pmem_addr)
 {
-	pr_err("%s\n", __func__);
-	/* TODO */
-	return -EINVAL;
+	int ret = -EINVAL;
+	struct allocation_data *adata = file->private_data;
+
+	if (!adata->handle)
+		return -EINVAL;
+
+	switch (cmd) {
+	case PMEM_CLEAN_INV_CACHES:
+		ret = msm_ion_do_cache_op(adata->client, adata->handle,
+			&pmem_addr->vaddr, pmem_addr->length,
+			ION_IOC_CLEAN_INV_CACHES);
+		break;
+	case PMEM_CLEAN_CACHES:
+		ret = msm_ion_do_cache_op(adata->client, adata->handle,
+			&pmem_addr->vaddr, pmem_addr->length,
+			ION_IOC_CLEAN_CACHES);
+		break;
+	case PMEM_INV_CACHES:
+		ret = msm_ion_do_cache_op(adata->client, adata->handle,
+			&pmem_addr->vaddr, pmem_addr->length,
+			ION_IOC_INV_CACHES);
+		break;
+	default:
+		pr_err("%s: invalid cmd %d\n", __func__, cmd);
+		break;
+	};
+	return ret;
 }
 EXPORT_SYMBOL(pmem_cache_maint);
 
