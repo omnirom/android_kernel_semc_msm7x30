@@ -2384,6 +2384,7 @@ static struct android_pmem_platform_data android_pmem_adsp_pdata = {
 	.memory_type = MEMTYPE_EBI0,
 #else
 	.ion_client = ION_MM_HEAP_NAME,
+	.heap_mask = ION_CP_MM_HEAP_ID,
 #endif
 };
 
