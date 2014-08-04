@@ -118,11 +118,10 @@ err:
 }
 EXPORT_SYMBOL(get_pmem_file);
 
-int get_pmem_fd(int fd, unsigned long *start, unsigned long *end)
+int get_pmem_fd(int fd, unsigned long *start, unsigned long *len)
 {
-	pr_err("%s\n", __func__);
-	/* TODO */
-	return -EINVAL;
+	unsigned long vstart;
+	return get_pmem_file(fd, start, &vstart, len, NULL);
 }
 EXPORT_SYMBOL(get_pmem_fd);
 
@@ -169,8 +168,13 @@ EXPORT_SYMBOL(put_pmem_file);
 
 void put_pmem_fd(int fd)
 {
-	pr_err("%s\n", __func__);
-	/* TODO */
+	int put_needed;
+	struct file *file = fget_light(fd, &put_needed);
+
+	if (file) {
+		put_pmem_file(file);
+		fput_light(file, put_needed);
+	}
 }
 EXPORT_SYMBOL(put_pmem_fd);
 
