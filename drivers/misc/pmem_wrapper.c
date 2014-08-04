@@ -24,6 +24,7 @@
 #include <linux/msm_ion.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
+#include <linux/uaccess.h>
 
 #define PMEM_MAX_DEVICES (10)
 
@@ -227,9 +228,96 @@ EXPORT_SYMBOL(pmem_cache_maint);
 
 static long pmem_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
-	pr_err("%s\n", __func__);
-	/* TODO: Is this deprecated? */
-	return -EINVAL;
+	int ret = -EINVAL;
+	struct allocation_data *adata = file->private_data;
+	void __user *argp = (void __user *)arg;
+
+	switch (cmd) {
+	case PMEM_GET_SIZE:
+	case PMEM_GET_PHYS: {
+		struct pmem_region region;
+		unsigned long start = 0;
+		size_t len = 0;
+		if (!adata->handle)
+			return -ENOMEM;
+
+		ret = ion_phys(adata->client, adata->handle, &start, &len);
+		if (ret) {
+			pr_err("%s: Failed to ion_phys ret=%d\n",
+				__func__, ret);
+			return ret;
+		}
+		region.offset = start;
+		region.len = len;
+
+		if (copy_to_user(argp, &region, sizeof(region)))
+			return -EFAULT;
+		break;
+	}
+	case PMEM_MAP:
+		pr_err("%s: Unsupported ioctl PMEM_MAP\n", __func__);
+		break;
+	case PMEM_UNMAP:
+		pr_err("%s: Unsupported ioctl PMEM_UNMAP\n", __func__);
+		break;
+	case PMEM_ALLOCATE: {
+		if (adata->handle)
+			return -EINVAL;
+		adata->handle = ion_alloc(adata->client, arg, SZ_4K,
+			ION_HEAP(ION_CP_MM_HEAP_ID), 0);
+		if (IS_ERR_OR_NULL(adata->handle)) {
+			ret = PTR_ERR(adata->handle);
+			adata->handle = NULL;
+			pr_err("%s: Failed to ion_alloc ret=%d\n",
+				__func__, ret);
+			return ret;
+		}
+		ret = 0;
+		break;
+	}
+	case PMEM_CONNECT:
+		pr_err("%s: Unsupported ioctl PMEM_CONNECT\n", __func__);
+		break;
+	case PMEM_GET_TOTAL_SIZE:
+		pr_err("%s: Unsupported ioctl PMEM_GET_TOTAL_SIZE\n", __func__);
+		break;
+	case PMEM_CLEAN_INV_CACHES:
+	case PMEM_CLEAN_CACHES:
+	case PMEM_INV_CACHES: {
+		struct pmem_addr pmem_addr;
+		if (copy_from_user(&pmem_addr, argp, sizeof(struct pmem_addr)))
+			return -EFAULT;
+		ret = pmem_cache_maint(file, cmd, &pmem_addr);
+		break;
+	}
+	case PMEM_GET_FREE_SPACE:
+		pr_err("%s: Unsupported ioctl PMEM_GET_FREE_SPACE\n", __func__);
+		break;
+	case PMEM_ALLOCATE_ALIGNED: {
+		struct pmem_allocation alloc;
+		if (copy_from_user(&alloc, argp,
+			sizeof(struct pmem_allocation)))
+			return -EFAULT;
+		if (adata->handle)
+			return -EINVAL;
+		adata->handle = ion_alloc(adata->client, alloc.size,
+			alloc.align, ION_HEAP(ION_CP_MM_HEAP_ID), 0);
+		if (IS_ERR_OR_NULL(adata->handle)) {
+			ret = PTR_ERR(adata->handle);
+			adata->handle = NULL;
+			pr_err("%s: Failed to ion_alloc ret=%d\n",
+				__func__, ret);
+		} else {
+			ret = 0;
+		}
+		break;
+	}
+	default:
+		pr_err("%s: Unsupported ioctl %d\n", __func__, cmd);
+		break;
+	};
+
+	return ret;
 }
 
 static int pmem_mmap(struct file *file, struct vm_area_struct *vma)
