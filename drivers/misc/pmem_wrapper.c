@@ -39,6 +39,10 @@ struct allocation_data {
 	struct ion_handle *handle;
 	unsigned int heap_mask;
 	struct vm_area_struct *vma; /* NULL for indirect allocations. */
+
+	ion_phys_addr_t addr;
+	size_t len;
+	void *kvaddr;
 };
 
 static struct pmem_data pmem[PMEM_MAX_DEVICES];
@@ -60,6 +64,132 @@ static int is_pmem_file(struct file *file)
 	return (unlikely(id >= PMEM_MAX_DEVICES ||
 		file->f_dentry->d_inode->i_rdev !=
 		     MKDEV(MISC_MAJOR, pmem[id].dev.minor))) ? 0 : 1;
+}
+
+static int pmem_set_adata(struct allocation_data *adata)
+{
+	int ret;
+
+	if (!adata) {
+		pr_err("%s: No allocation data\n", __func__);
+		return -EINVAL;
+	}
+
+	if (!adata->handle || !adata->client) {
+		pr_err("%s: Invalid allocation data\n", __func__);
+		return -EPERM;
+	}
+
+	ret = ion_phys(adata->client, adata->handle, &adata->addr, &adata->len);
+	if (ret) {
+		pr_err("%s: Failed to ion_phys ret=%d\n", __func__, ret);
+		return ret;
+	}
+
+	adata->kvaddr = ion_map_kernel(adata->client, adata->handle);
+	if (IS_ERR_OR_NULL(adata->kvaddr)) {
+		ret = PTR_ERR(adata->kvaddr);
+		adata->kvaddr = NULL;
+		pr_err("%s: Failed to ion_map_kernel ret=%d\n", __func__, ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+static int pmem_remove_adata(struct allocation_data *adata)
+{
+	if (!adata) {
+		pr_err("%s: No allocation data\n", __func__);
+		return -EINVAL;
+	}
+
+	if (!adata->handle || !adata->client) {
+		pr_err("%s: Invalid allocation data\n", __func__);
+		return -EPERM;
+	}
+
+	ion_unmap_kernel(adata->client, adata->handle);
+	adata->kvaddr = NULL;
+
+	adata->addr = 0;
+	adata->len = 0;
+
+	return 0;
+}
+
+static int pmem_allocate(
+	struct allocation_data *adata, size_t size, size_t align)
+{
+	int ret;
+
+	if (!adata) {
+		pr_err("%s: No allocation data\n", __func__);
+		ret = -EINVAL;
+		goto err;
+	}
+
+	if (adata->handle) {
+		pr_err("%s: Already allocated\n", __func__);
+		ret = -EPERM;
+		goto err;
+	}
+
+	if (!adata->client || !adata->heap_mask) {
+		pr_err("%s: Invalid allocation data\n", __func__);
+		ret = -EPERM;
+		goto err;
+	}
+
+	adata->handle = ion_alloc(adata->client, size, align,
+		ION_HEAP(adata->heap_mask), 0);
+	if (IS_ERR_OR_NULL(adata->handle)) {
+		ret = PTR_ERR(adata->handle);
+		adata->handle = NULL;
+		pr_err("%s: Failed to ion_alloc ret=%d\n", __func__, ret);
+		goto err;
+	}
+
+	ret = pmem_set_adata(adata);
+	if (ret) {
+		pr_err("%s: Failed to set allocation data ret=%d\n",
+			__func__, ret);
+		goto err_free;
+	}
+
+	return 0;
+err_free:
+	ion_free(adata->client, adata->handle);
+	adata->handle = NULL;
+err:
+	return ret;
+}
+
+static int pmem_free(struct allocation_data *adata)
+{
+	int ret;
+
+	if (!adata) {
+		pr_err("%s: No allocation data\n", __func__);
+		return -EINVAL;
+	}
+
+	if (!adata->client || !adata->handle) {
+		pr_err("%s: Invalid allocation data\n", __func__);
+		return -EPERM;
+	}
+
+	ret = pmem_remove_adata(adata);
+	if (ret) {
+		pr_err("%s: Failed to remove allocation data ret=%d\n",
+			__func__, ret);
+		return ret;
+	}
+
+	ion_free(adata->client, adata->handle);
+	adata->handle = NULL;
+
+	return 0;
 }
 
 int get_pmem_file(unsigned int fd, unsigned long *start, unsigned long *vstart,
@@ -85,42 +215,26 @@ int get_pmem_file(unsigned int fd, unsigned long *start, unsigned long *vstart,
 		adata->handle = ion_import_dma_buf(adata->client, fd);
 		adata->vma = NULL;
 
+		ret = pmem_set_adata(adata);
+		if (ret) {
+			pr_err("%s: Failed to set allocation data ret=%d\n",
+				__func__, ret);
+			ion_free(adata->client, adata->handle);
+			kfree(adata);
+			kfree(file);
+			return ret;
+		}
+
 		file->private_data = adata;
 	}
 
-	if (IS_ERR_OR_NULL(adata->handle)) {
-		ret = PTR_ERR(adata->handle);
-		adata->handle = NULL;
-		pr_err("%s: Invalid handle ret=%d\n", __func__, ret);
-		goto err;
-	}
-
-	ret = ion_phys(adata->client, adata->handle, start, (size_t *)len);
-	if (ret) {
-		pr_err("%s: Failed to ion_phys ret=%d\n", __func__, ret);
-		goto err_free;
-	}
-
-	*vstart = (unsigned long)ion_map_kernel(adata->client, adata->handle);
-	if (IS_ERR_OR_NULL((void *)*vstart)) {
-		ret = PTR_ERR((void *)*vstart);
-		pr_err("%s: Failed to ion_map_kernel ret=%d\n", __func__, ret);
-		goto err_free;
-	}
+	*start = adata->addr;
+	*vstart = (unsigned long)adata->kvaddr;
+	*len = adata->len;
 
 	*filep = file;
 
 	return 0;
-err_free:
-	if (!pmem_file) {
-		ion_free(adata->client, adata->handle);
-		adata->handle = NULL;
-		kfree(file);
-	}
-err:
-	if (pmem_file)
-		fput(file);
-	return ret;
 }
 EXPORT_SYMBOL(get_pmem_file);
 
@@ -154,10 +268,8 @@ void put_pmem_file(struct file *file)
 	bool pmem_file = is_pmem_file(file);
 
 	if (adata->client && adata->handle) {
-		ion_unmap_kernel(adata->client, adata->handle);
 		if (!pmem_file) {
-			ion_free(adata->client, adata->handle);
-			adata->handle = NULL;
+			pmem_free(adata);
 			kfree(adata);
 		}
 	}
@@ -238,22 +350,16 @@ static long pmem_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case PMEM_GET_SIZE:
 	case PMEM_GET_PHYS: {
 		struct pmem_region region;
-		unsigned long start = 0;
-		size_t len = 0;
+
 		if (!adata->handle)
 			return -ENOMEM;
 
-		ret = ion_phys(adata->client, adata->handle, &start, &len);
-		if (ret) {
-			pr_err("%s: Failed to ion_phys ret=%d\n",
-				__func__, ret);
-			return ret;
-		}
-		region.offset = start;
-		region.len = len;
+		region.offset = adata->addr;
+		region.len = adata->len;
 
 		if (copy_to_user(argp, &region, sizeof(region)))
 			return -EFAULT;
+		ret = 0;
 		break;
 	}
 	case PMEM_MAP:
@@ -262,21 +368,14 @@ static long pmem_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case PMEM_UNMAP:
 		pr_err("%s: Unsupported ioctl PMEM_UNMAP\n", __func__);
 		break;
-	case PMEM_ALLOCATE: {
-		if (adata->handle)
-			return -EINVAL;
-		adata->handle = ion_alloc(adata->client, arg, SZ_4K,
-			ION_HEAP(adata->heap_mask), 0);
-		if (IS_ERR_OR_NULL(adata->handle)) {
-			ret = PTR_ERR(adata->handle);
-			adata->handle = NULL;
-			pr_err("%s: Failed to ion_alloc ret=%d\n",
+	case PMEM_ALLOCATE:
+		ret = pmem_allocate(adata, arg, SZ_4K);
+		if (ret) {
+			pr_err("%s: Failed to pmem_allocate ret=%d\n",
 				__func__, ret);
 			return ret;
 		}
-		ret = 0;
 		break;
-	}
 	case PMEM_CONNECT:
 		pr_err("%s: Unsupported ioctl PMEM_CONNECT\n", __func__);
 		break;
@@ -300,17 +399,11 @@ static long pmem_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		if (copy_from_user(&alloc, argp,
 			sizeof(struct pmem_allocation)))
 			return -EFAULT;
-		if (adata->handle)
-			return -EINVAL;
-		adata->handle = ion_alloc(adata->client, alloc.size,
-			alloc.align, ION_HEAP(adata->heap_mask), 0);
-		if (IS_ERR_OR_NULL(adata->handle)) {
-			ret = PTR_ERR(adata->handle);
-			adata->handle = NULL;
-			pr_err("%s: Failed to ion_alloc ret=%d\n",
+		ret = pmem_allocate(adata, alloc.size, alloc.align);
+		if (ret) {
+			pr_err("%s: Failed to pmem_allocate ret=%d\n",
 				__func__, ret);
-		} else {
-			ret = 0;
+			return ret;
 		}
 		break;
 	}
@@ -329,29 +422,17 @@ static int pmem_mmap(struct file *file, struct vm_area_struct *vma)
 	unsigned long vma_size = vma->vm_end - vma->vm_start;
 	bool already_allocated = (adata->handle != NULL);
 
-	unsigned long start = 0;
-	size_t len = 0;
-
 	if (!already_allocated) {
-		adata->handle = ion_alloc(adata->client, vma_size, SZ_4K,
-			ION_HEAP(adata->heap_mask), 0);
-		if (IS_ERR_OR_NULL(adata->handle)) {
-			ret = PTR_ERR(adata->handle);
-			adata->handle = NULL;
-			pr_err("%s: Failed to ion_alloc ret=%d\n",
+		ret = pmem_allocate(adata, vma_size, SZ_4K);
+		if (ret) {
+			pr_err("%s: Failed to pmem_allocate ret=%d\n",
 				__func__, ret);
 			goto err;
 		}
 	}
 
-	ret = ion_phys(adata->client, adata->handle, &start, &len);
-	if (ret) {
-		pr_err("%s: Failed to ion_phys ret=%d\n", __func__, ret);
-		goto err_free;
-	}
-
 	/* Set physical address link with VMA. */
-	vma->vm_pgoff = start >> PAGE_SHIFT;
+	vma->vm_pgoff = adata->addr >> PAGE_SHIFT;
 
 	/* MAP physical address to userspace. */
 	ret = remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff, vma_size,
@@ -365,13 +446,12 @@ static int pmem_mmap(struct file *file, struct vm_area_struct *vma)
 	adata->vma = vma;
 
 	pr_debug("%s: Allocated & mmapped p:0x%lx v:0x%lx\n",
-		__func__, start, vma->vm_start);
+		__func__, adata->addr, vma->vm_start);
 
 	return 0;
 err_free:
 	if (!already_allocated) {
-		ion_free(adata->client, adata->handle);
-		adata->handle = NULL;
+		pmem_free(adata);
 	}
 err:
 	return ret;
@@ -398,10 +478,7 @@ static int pmem_release(struct inode *inode, struct file *file)
 {
 	struct allocation_data *adata = file->private_data;
 
-	if (adata->client && adata->handle) {
-		ion_free(adata->client, adata->handle);
-		adata->handle = NULL;
-	}
+	pmem_free(adata);
 
 	file->private_data = NULL;
 	kfree(adata);
